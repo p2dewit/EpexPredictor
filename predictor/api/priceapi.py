@@ -42,6 +42,11 @@ This is an open source project, feel free to host it yourself. [Source code and 
 Electricity prices provided under CC-BY-4.0 by [energy-charts.info](https://api.energy-charts.info/) and [ENTSO-E](https://www.entsoe.eu/)
 
 [Weather data by Open-Meteo.com](https://open-meteo.com/)
+
+### NED data in Dutch forecasts
+[![Nationaal Energie Dashboard](https://acc.ned.nl/sites/default/files/2024-02/ned%20logo%20%281%29.svg)](https://ned.nl/)
+
+Dutch forecasts use actual and forecast load, solar, onshore wind, and offshore wind data from the Nationaal Energie Dashboard (NED).
 """)
 
 
@@ -254,7 +259,8 @@ class BaseModelCoordinator:
         stores implicitly via prepare_dataframe.
         """
         learn_start = start_ts - timedelta(days=TRAINING_DAYS)
-        learn_end = start_ts
+        # The first plotted quarter is a prediction target, not a training label.
+        learn_end = start_ts - timedelta(minutes=15)
 
         # Make sure the shared stores are loaded from persistence (no-op if already done)
         await self.ensure_loaded()
@@ -420,12 +426,11 @@ class RegionPriceManager:
             # was retrained (which means at least one of our cross-features changed).
             if self.predictor.last_data_update() > self.last_retrain or base_models._last_retrain > self.last_retrain:
                 log.info(f"{self.predictor.region.bidding_zone_entsoe}: retraining stage-2 model")
-                self.last_retrain = datetime.now(timezone.utc)
-
                 await self.predictor.train(train_start, train_end)
                 newprices, neweval = await self.predictor.predict(train_start, train_end), await self.predictor.predict(train_start, train_end, fill_known=False)
                 self.cachedprices = newprices
                 self.cachedeval = neweval
+                self.last_retrain = datetime.now(timezone.utc)
                 lastknown = self.predictor.pricestore.get_last_known()
                 if lastknown is not None:
                     self.last_known_price = lastknown
@@ -540,7 +545,7 @@ async def generate_evaluation_plot(
     width: int = Query(2048, description="image width in pixels", ge=300, le=10000),
     height: int = Query(1024, description="image height in pixels", ge=300, le=10000)):
     """
-    Trains a model just for you, training with 120 days before the given time range and providing a forecast for the given range.
+    Trains a model with the 180 days before the given range. Stage two uses chronological base predictions.
     - If there is no cached weather or price data for the given time range, this request can take a while. Be patient.
     - This request is rather CPU intensive. Do not batch-call or you will be banned.
     """

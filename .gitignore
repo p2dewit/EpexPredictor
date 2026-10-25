@@ -177,3 +177,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Lokale installatiegegevens
+.env
+.env.*
+!.env.example
+/backups/
+/data/
+*.bak
+*.pem
+*.key
+
+

@@ -21,6 +21,7 @@ class PriceRegion:
     longitudes: list[float]
 
     use_entsoe_load_forecast: bool = True
+    use_ned_forecasts: bool = False
     use_de_nat_gas_price: bool = True
     holidays: list[HolidayBase] = None # type:ignore # one entry for each regional holiday set, e.g. one for BW, one for BY, ...
     
@@ -106,6 +107,7 @@ PRICE_REGIONS[PriceRegionName.NL] = PriceRegion(
     latitudes=[52.69, 52.36, 50.51, 53.36],
     longitudes=[6.11, 4.90, 5.41, 4.98],
     use_entsoe_load_forecast=False, # Seems to be low quality/reduces performance
+    use_ned_forecasts=True,
     use_de_nat_gas_price = False, # doesn't seem to help
 )
 
