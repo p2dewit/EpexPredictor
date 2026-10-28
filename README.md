@@ -1,71 +1,71 @@
 # EPEX day-ahead price prediction
 
-## Aanpassingen in deze fork
+## Changes in this fork
 
-Deze persoonlijke fork bouwt voort op [b3nn0/EpexPredictor](https://github.com/b3nn0/EpexPredictor). Onderstaande aanvullingen beschrijven de lokale container-export en de broncode per 26 oktober 2026. De oorspronkelijke modelbeschrijving en installatie-instructies staan verderop; de prestatiecijfers uit de oorspronkelijke README zijn **geen benchmark van deze fork**.
+This personal fork is based on [b3nn0/EpexPredictor](https://github.com/b3nn0/EpexPredictor). The additions below describe the local container export and source code as of 26 October 2026. The original model description and installation instructions appear below; the performance figures in the original README are **not a benchmark of this fork**.
 
-### Nederlandse netbelasting, zon en wind via NED
+### Dutch grid load, solar, and wind data from NED
 
-Voor Nederland is een `NedDataStore` toegevoegd met vier aparte modelinvoeren uit het Nationaal Energie Dashboard:
+For the Netherlands, a `NedDataStore` has been added with four separate model inputs from the National Energy Dashboard:
 
-| Invoer | Betekenis |
+| Input | Description |
 | --- | --- |
-| `ned_load_mw` | Nederlandse elektriciteitsvraag |
-| `ned_solar_mw` | Zonneproductie |
-| `ned_wind_onshore_mw` | Windproductie op land |
-| `ned_wind_offshore_mw` | Windproductie op zee |
+| `ned_load_mw` | Dutch electricity demand |
+| `ned_solar_mw` | Solar generation |
+| `ned_wind_onshore_mw` | Onshore wind generation |
+| `ned_wind_offshore_mw` | Offshore wind generation |
 
-De koppeling vraagt **echte kwartiergegevens** op (`granularity=4`, UTC), in plaats van uurwaarden vier keer te herhalen. De cache heet `nedforecast_v2`, zodat oude herhaalde uurgegevens niet met de nieuwe kwartierdata worden gemengd.
+The integration requests **actual quarter-hour data** (`granularity=4`, UTC) instead of repeating hourly values four times. The cache is named `nedforecast_v2` so that older repeated hourly data is not mixed with the new quarter-hour data.
 
-Ontbrekende waarden worden per reeks opgespoord: een aanwezig vraagcijfer verbergt bijvoorbeeld geen ontbrekende offshore-windwaarde. Ontbrekende perioden worden opnieuw opgehaald, recente gegevens worden ververst en de grens tussen historische gegevens en de voorspelling wordt op het kwartier gelegd. Zo kan het lopende kwartier niet tussen beide aanvragen vallen. De client verwerkt paginering, doseert aanvragen en handelt een rate-limitantwoord af. Gegevens die NED nog niet publiceert blijven ontbrekend in plaats van verzonnen of onbeperkt doorgetrokken te worden.
+Missing values are detected separately for each series: for example, an available load value does not hide a missing offshore wind value. Missing periods are fetched again, recent data is refreshed, and the boundary between historical data and the forecast is aligned to a quarter-hour. This prevents the current quarter from falling between the two requests. The client handles pagination, rate-limits requests, and responds to rate-limit errors. Data that NED has not published remains missing rather than being invented or extrapolated indefinitely.
 
-### Residuele vraag als extra invoer
+### Residual load as an additional input
 
-Het model krijgt ook een expliciete vijfde NED-invoer:
+The model also receives an explicit fifth NED input:
 
 ```text
 ned_residual_load_mw = ned_load_mw − ned_solar_mw
                        − ned_wind_onshore_mw − ned_wind_offshore_mw
 ```
 
-Daarmee kan LightGBM het gezamenlijke effect van vraag, zon en veel wind leren, naast de afzonderlijke reeksen en de bestaande weersinformatie. Negatieve residuele vraag blijft behouden. Dit is de elektriciteitsvraag na aftrek van deze drie productievormen; het is niet het huishoudelijke restverbruik uit OptiVolt.
+This allows LightGBM to learn the combined effect of load, solar, and wind, in addition to the separate series and existing weather data. Negative residual load is retained. This is electricity demand after subtracting these three forms of generation; it is not the household residual consumption used by OptiVolt.
 
-Er is geen vaste prijsverlaging per MW wind ingebouwd. Het model leert het verband uit gegevens, inclusief niet-lineaire verbanden. Een sterker inhoudelijk model betekent niet automatisch aantoonbaar betere voorspellingen; daarvoor zijn metingen nodig.
+No fixed price reduction per MW of wind is hard-coded. The model learns the relationship from data, including nonlinear relationships. A model with more informative inputs does not automatically produce demonstrably better forecasts; that requires measurement.
 
-### Doorgaande voorspelling bij ontbrekende NED-data
+### Continuous forecasting when NED data is missing
 
-Naast het model mét NED wordt voor Nederland een model **zonder NED-invoer** getraind. Per kwartier wordt gecontroleerd of alle vereiste NED-waarden aanwezig en eindig zijn. Anders wordt dat kwartier met het fallbackmodel voorspeld. Dit geldt zowel voor gaten midden in de reeks als voor het einde van de beschikbare NED-horizon.
+In addition to the model **with NED inputs**, a model **without NED inputs** is trained for the Netherlands. Each quarter-hour is checked to ensure all required NED values are present and finite. Otherwise, that quarter-hour is predicted with the fallback model. This applies both to gaps within the series and to the end of the available NED horizon.
 
-Het fallbackmodel gebruikt ook bruikbare historische rijen waarvoor NED ontbreekt. Beide modellen worden pas samen vervangen zodra de training gereed is. De log meldt hoeveel kwartieren via het model zonder NED lopen. Andere databronnen moeten nog steeds bruikbare invoer leveren; de fallback is geen garantie tegen iedere mogelijke databronstoring.
+The fallback model also uses usable historical rows for which NED data is missing. Both models are replaced together only after training is complete. The log reports how many quarter-hours use the model without NED. Other data sources must still provide usable inputs; the fallback does not protect against every possible data-source failure.
 
-### Tweede modelstap met chronologische trainingsvoorspellingen
+### Second model stage with chronological training forecasts
 
-De tweede modelstap gebruikt nog steeds voorspellingen van de eerste stap uit meerdere regio's. Voor **training** worden die nu gemaakt door aparte modellen die alleen oudere prijslabels hebben gezien:
+The second model stage still uses first-stage forecasts from multiple regions. For **training**, these forecasts are now generated by separate models that have only seen older price labels:
 
-- Voorspelblokken van zeven dagen, met vaste weekgrenzen in UTC.
-- Minimaal 60 dagen historie vóór een blok; maximaal 180 dagen trainingshistorie.
-- Geen prijslabel uit de te voorspellen week in de training van het betreffende basismodel.
-- De eerste periode zonder voldoende historie blijft zonder trainingsvoorspellingen en wordt niet aangevuld met voorspellingen die hun eigen doelprijzen al hebben gezien.
-- Tijdens live voorspellen gebruikt stap twee de actuele basismodellen.
+- Forecast blocks are seven days long, with fixed week boundaries in UTC.
+- At least 60 days of history before a block; at most 180 days of training history.
+- No price label from the week being forecast is used to train the corresponding base model.
+- The initial period without sufficient history has no training forecasts; it is not filled with forecasts from models that have already seen their target prices.
+- During live forecasting, stage two uses the current base models.
 
-Dit voorkomt de betreffende vorm van datalek tussen de trainingsprijzen en de extra prijsfeatures van stap twee. Het bewijst geen volledig historische realtime-backtest: ook de beschikbaarheid en revisies van weer- en andere brongegevens kunnen evaluaties beïnvloeden.
+This prevents the specific form of leakage between training prices and the additional price features used by stage two. It does not prove a fully historical real-time backtest: the availability and revisions of weather and other source data can also affect evaluations.
 
-### Cache, training en evaluatie
+### Cache, training, and evaluation
 
-- Chronologische voorspellingen worden per regio en featureconfiguratie opgeslagen in een gecomprimeerde `stacking_oof_v1`-cache, met de trainingsgrens per voorspelling.
-- Cache-invoer wordt gecontroleerd op een trainingsgrens vóór het voorspelde moment. Bestanden worden atomair vervangen; afgeronde blokken blijven bij een onderbreking beschikbaar.
-- De opbouw beperkt gelijktijdige modeltraining en gebruikt één LightGBM-thread per chronologisch basismodel om de belasting te beperken. De eerste volledige opbouw blijft aanzienlijk zwaarder dan een normale voorspelling; reserveer voldoende geheugen voor de gebruikte regio's en historie.
-- Een historische evaluatie traint tot het kwartier **vóór** het eerste evaluatiemoment.
-- De tijdstempel van een geslaagde hertraining wordt pas bijgewerkt nadat training en het vullen van de voorspellingcache zijn afgerond.
-- De Dockerconfiguratie gebruikt Python 3.14. API-sleutels worden via omgevingsvariabelen aangeleverd, niet als vaste waarden in `compose.yaml`. Ignore-regels sluiten lokale configuratie en runtimebestanden uit.
+- Chronological forecasts are stored by region and feature configuration in a compressed `stacking_oof_v1` cache, with the training cutoff recorded for each forecast.
+- Cache entries are checked to ensure their training cutoff precedes the forecast time. Files are replaced atomically; completed blocks remain available if the process is interrupted.
+- Cache construction limits concurrent model training and uses one LightGBM thread per chronological base model to reduce system load. The first full build remains substantially heavier than a normal forecast; allow sufficient memory for the selected regions and history.
+- A historical evaluation trains through the quarter-hour **before** the first evaluation point.
+- The successful retraining timestamp is updated only after training and forecast-cache population are complete.
+- The Docker configuration uses Python 3.14. API keys are provided through environment variables, not hard-coded in `compose.yaml`. Ignore rules exclude local configuration and runtime files.
 
-### Gebruik en beoordeling met OptiVolt
+### Use and evaluation with OptiVolt
 
-Stel lokaal `EPEXPREDICTOR_NED_API_KEY` in voor NED en, waar nodig, `EPEXPREDICTOR_ENTSOE_API_KEY` voor ENTSO-E. Publiceer de waarden of je `.env` niet. Zonder NED-sleutel wordt de NED-invoer overgeslagen en blijft de fallbackroute beschikbaar als de overige invoer voldoende is.
+Set `EPEXPREDICTOR_NED_API_KEY` locally for NED and, where needed, `EPEXPREDICTOR_ENTSOE_API_KEY` for ENTSO-E. Do not publish these values or your `.env` file. Without a NED key, NED inputs are skipped and the fallback path remains available if the other inputs are sufficient.
 
-Kies bij API-aanvragen en evaluatiegrafieken expliciet **`region=NL`**: de standaardregio is Duitsland. De API-documentatie vermeldt NED als gegevensbron. De aanvullende registratie van **DA reliability** en de bijbehorende tooltip bevinden zich in de OptiVolt-fork, niet in EpexPredictor. Die registratie vergelijkt opgeslagen voorspellingen met later ontvangen prijzen en moet eerst voldoende dagen verzamelen voordat conclusies over verbetering kunnen worden getrokken.
+For API requests and evaluation plots, explicitly select **`region=NL`**: the default region is Germany. The API documentation lists NED as a data source. The additional **DA reliability** tracking and its tooltip are part of the OptiVolt fork, not EpexPredictor. This tracking compares stored forecasts with prices received later and must collect enough days before conclusions about improvement can be drawn.
 
-Deze fork bevat geen afzonderlijke nieuwe dashboardinterface; daarom zijn hier geen screenshots toegevoegd die een niet-bestaand dashboard of bewezen nauwkeurigheidswinst suggereren.
+This fork does not include a separate new dashboard interface; therefore, no screenshots are included that might suggest a nonexistent dashboard or proven accuracy gains.
 
 
 This is a simple statistical model to predict EPEX day-ahead prices based on various parameters.
